@@ -7,15 +7,22 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/lorenzodonini/ocpp-go/ocpp"
 	"github.com/lorenzodonini/ocpp-go/ocpp1.6/core"
+	"github.com/lorenzodonini/ocpp-go/ocpp1.6/remotetrigger"
 
-	"ocpp-server/internal/api"
+	v1api "ocpp-server/internal/api/v1"
 	ocpphandlers "ocpp-server/internal/ocpp"
+	"ocpp-server/internal/services"
 )
 
 // setupOCPPHandlers configures all OCPP message handlers
 func (s *Server) setupOCPPHandlers() {
 	s.ocppServer.SetTransportRequestHandler(func(clientID string, request ocpp.Request, requestId string, action string) {
 		log.Printf("REQUEST_HANDLER: Received request [%s] from client %s: %s, type: %T", requestId, clientID, action, request)
+
+		// Publish OCPP message to MQTT if publisher is available and connected
+		if s.mqttPublisher != nil && s.mqttPublisher.IsConnected() {
+			s.mqttPublisher.PublishOCPPMessage(clientID, requestId, action, request)
+		}
 
 		switch req := request.(type) {
 		case *core.BootNotificationRequest:
@@ -70,6 +77,27 @@ func (s *Server) setupOCPPHandlers() {
 	s.ocppServer.SetTransportResponseHandler(func(clientID string, response ocpp.Response, requestId string) {
 		log.Printf("RESPONSE_HANDLER: Received response [%s] from client %s, type: %T", requestId, clientID, response)
 
+		// Publish OCPP response to MQTT if publisher is available and connected
+		if s.mqttPublisher != nil && s.mqttPublisher.IsConnected() {
+			// Extract message type from response type
+			messageType := ""
+			switch response.(type) {
+			case *core.GetConfigurationConfirmation:
+				messageType = "GetConfiguration"
+			case *core.ChangeConfigurationConfirmation:
+				messageType = "ChangeConfiguration"
+			case *core.RemoteStartTransactionConfirmation:
+				messageType = "RemoteStartTransaction"
+			case *core.RemoteStopTransactionConfirmation:
+				messageType = "RemoteStopTransaction"
+			case *remotetrigger.TriggerMessageConfirmation:
+				messageType = "TriggerMessage"
+			default:
+				messageType = "Unknown"
+			}
+			s.mqttPublisher.PublishOCPPResponse(clientID, requestId, messageType, response)
+		}
+
 		switch res := response.(type) {
 		case *core.GetConfigurationConfirmation:
 			log.Printf("RESPONSE_HANDLER: Processing GetConfigurationConfirmation")
@@ -81,15 +109,60 @@ func (s *Server) setupOCPPHandlers() {
 
 		case *core.RemoteStartTransactionConfirmation:
 			log.Printf("RESPONSE_HANDLER: Processing RemoteStartTransactionConfirmation")
-			s.remoteTransactionHandler.HandleRemoteStartTransactionResponse(clientID, requestId, res)
+			ocpphandlers.HandleRemoteStartTransactionResponse(s.correlationManager, clientID, requestId, res)
 
 		case *core.RemoteStopTransactionConfirmation:
 			log.Printf("RESPONSE_HANDLER: Processing RemoteStopTransactionConfirmation")
-			s.remoteTransactionHandler.HandleRemoteStopTransactionResponse(clientID, requestId, res)
+			ocpphandlers.HandleRemoteStopTransactionResponse(s.correlationManager, clientID, requestId, res)
+
+		case *remotetrigger.TriggerMessageConfirmation:
+			log.Printf("RESPONSE_HANDLER: Processing TriggerMessageConfirmation")
+			ocpphandlers.HandleTriggerMessageResponse(s.correlationManager, clientID, requestId, res)
 
 		default:
 			log.Printf("RESPONSE_HANDLER: Unknown response type: %T from client %s", res, clientID)
 		}
+	})
+
+	// Add error handler for CALLERROR messages
+	s.ocppServer.SetTransportErrorHandler(func(clientID string, err *ocpp.Error, details interface{}) {
+		log.Printf("ERROR_HANDLER: Received error from client %s: %s", clientID, err.Error())
+
+		// Handle different request types using existing correlation logic
+		// We need to determine which type of request this error is responding to
+		// Check for pending requests of each type and handle the first match found
+
+		// Try TriggerMessage first (most common)
+		if foundKey, _ := s.correlationManager.FindPendingRequest(clientID, "TriggerMessage"); foundKey != "" {
+			ocpphandlers.HandleTriggerMessageError(s.correlationManager, clientID, err)
+			return
+		}
+
+		// Try GetConfiguration
+		if foundKey, _ := s.correlationManager.FindPendingRequest(clientID, "GetConfiguration"); foundKey != "" {
+			ocpphandlers.HandleGetConfigurationError(s.correlationManager, clientID, err)
+			return
+		}
+
+		// Try ChangeConfiguration
+		if foundKey, _ := s.correlationManager.FindPendingRequest(clientID, "ChangeConfiguration"); foundKey != "" {
+			ocpphandlers.HandleChangeConfigurationError(s.correlationManager, clientID, err)
+			return
+		}
+
+		// Try RemoteStartTransaction
+		if foundKey, _ := s.correlationManager.FindPendingRequest(clientID, "RemoteStartTransaction"); foundKey != "" {
+			ocpphandlers.HandleRemoteStartTransactionError(s.correlationManager, clientID, err)
+			return
+		}
+
+		// Try RemoteStopTransaction
+		if foundKey, _ := s.correlationManager.FindPendingRequest(clientID, "RemoteStopTransaction"); foundKey != "" {
+			ocpphandlers.HandleRemoteStopTransactionError(s.correlationManager, clientID, err)
+			return
+		}
+
+		log.Printf("ERROR_HANDLER: No pending request found for client %s error: %s", clientID, err.Error())
 	})
 
 	s.ocppServer.SetTransportNewClientHandler(func(clientID string) {
@@ -115,42 +188,35 @@ func (s *Server) setupOCPPHandlers() {
 func (s *Server) setupHTTPAPI(port string) {
 	router := mux.NewRouter()
 
-	// Health and legacy endpoints
-	router.HandleFunc("/health", api.HealthHandler).Methods("GET")
-	router.HandleFunc("/clients", api.GetClientsHandler(s.redisTransport)).Methods("GET")
+	// Create services
+	chargePointService := services.NewChargePointService(s.businessState, s.redisTransport)
+	transactionService := services.NewTransactionService(s.businessState)
+	configService := services.NewConfigurationService(
+		s.configManager,
+		s.redisTransport,
+		s.ocppServer,
+		s.correlationManager,
+	)
+	remoteTransactionService := services.NewRemoteTransactionService(
+		s.ocppServer,
+		chargePointService,
+		s.correlationManager,
+	)
+	triggerMessageService := services.NewTriggerMessageService(
+		s.ocppServer,
+		chargePointService,
+		s.correlationManager,
+	)
 
-	// Remote transaction control endpoints (new API)
-	s.remoteTransactionHandler.RegisterRoutes(router)
-
-	// Legacy remote transaction endpoints
-	router.HandleFunc("/clients/{clientID}/remote-start",
-		api.RemoteStartHandler(s.redisTransport, s.ocppServer, s.correlationManager)).Methods("POST")
-	router.HandleFunc("/clients/{clientID}/remote-stop",
-		api.RemoteStopHandler(s.redisTransport, s.ocppServer, s.correlationManager)).Methods("POST")
-
-	// New business state endpoints
-	router.HandleFunc("/chargepoints", api.GetChargePointsHandler(s.businessState)).Methods("GET")
-	router.HandleFunc("/chargepoints/{clientID}", api.GetChargePointHandler(s.businessState)).Methods("GET")
-	router.HandleFunc("/chargepoints/{clientID}/connectors", api.GetConnectorsHandler(s.businessState)).Methods("GET")
-	router.HandleFunc("/chargepoints/{clientID}/connectors/{connectorID}", api.GetConnectorHandler(s.businessState)).Methods("GET")
-	router.HandleFunc("/transactions", api.GetTransactionsHandler(s.businessState)).Methods("GET")
-	router.HandleFunc("/transactions/{transactionID}", api.GetTransactionHandler(s.businessState)).Methods("GET")
-
-	// Configuration endpoints
-	router.HandleFunc("/api/v1/chargepoints/{clientID}/configuration",
-		api.GetConfigurationHandler(s.configManager)).Methods("GET")
-	router.HandleFunc("/api/v1/chargepoints/{clientID}/configuration",
-		api.ChangeConfigurationHandler(s.configManager)).Methods("PUT")
-	router.HandleFunc("/api/v1/chargepoints/{clientID}/configuration/export",
-		api.ExportConfigurationHandler(s.configManager)).Methods("GET")
-
-	// Live configuration endpoints
-	router.HandleFunc("/api/v1/chargepoints/{clientID}/configuration/live",
-		api.GetLiveConfigurationHandler(s.redisTransport, s.ocppServer, s.correlationManager)).Methods("GET")
-	router.HandleFunc("/api/v1/chargepoints/{clientID}/configuration/live",
-		api.ChangeLiveConfigurationHandler(s.redisTransport, s.ocppServer)).Methods("PUT")
-	router.HandleFunc("/api/v1/chargepoints/{clientID}/status",
-		api.GetChargerStatusHandler(s.redisTransport)).Methods("GET")
+	// Register V1 API routes
+	v1api.RegisterRoutes(
+		router,
+		chargePointService,
+		transactionService,
+		configService,
+		remoteTransactionService,
+		triggerMessageService,
+	)
 
 	s.httpServer = &http.Server{
 		Addr:    ":" + port,

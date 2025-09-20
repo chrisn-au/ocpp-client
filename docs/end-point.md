@@ -2,8 +2,70 @@
 
 This document describes all REST API endpoints available in the OCPP Server.
 
+## Table of Contents
+
+### 🚀 Quick Access (Most Frequently Used)
+- [Remote Start Transaction](#post-apiv1transactionsremote-start) - Start a charging session remotely
+- [Remote Stop Transaction](#post-apiv1transactionsremote-stop) - Stop a charging session remotely
+- [Get Connected Clients](#get-clients) - See which charge points are online
+
+### 📋 OCPP Server API Reference
+1. [Health & System](#health-and-system-information)
+   - [Health Check](#get-health)
+   - [Connected Clients](#get-clients)
+
+2. [Charge Point Management](#charge-point-information)
+   - [List Charge Points](#get-apiv1chargepoints)
+   - [Get Charge Point Details](#get-apiv1chargepointsclientid)
+   - [Connector Information](#get-apiv1chargepointsclientidconnectors)
+   - [Status Check](#get-apiv1chargepointsclientidstatus)
+
+3. [📱 Remote Transaction Control](#remote-transaction-control) ⭐
+   - [Start Transaction](#post-apiv1transactionsremote-start)
+   - [Stop Transaction](#post-apiv1transactionsremote-stop)
+
+4. [Transaction Information](#transaction-information)
+   - [List Transactions](#get-apiv1transactions)
+   - [Get Transaction Details](#get-apiv1transactionstransactionid)
+
+5. [Configuration Management](#configuration-management)
+   - [Get Stored Configuration](#get-apiv1chargepointsclientidconfiguration)
+   - [Change Stored Configuration](#put-apiv1chargepointsclientidconfiguration)
+   - [Export Configuration](#get-apiv1chargepointsclientidconfigurationexport)
+   - [Live Configuration](#live-configuration-management)
+
+6. [API Reference](#api-reference-information)
+   - [Error Handling](#error-handling)
+   - [Architecture](#api-architecture)
+
+### 👥 User Management & Authentication APIs
+**For user, contract, and token management, see the separate CSMS API Service:**
+- **Service URL**: `http://localhost:59800/api/v1`
+- **Documentation**: [CSMS API Service README](../../csms-api-service/README.md)
+- **API Reference**: [CSMS API Reference](../../csms-api-service/API_REFERENCE.md)
+- **Features**:
+  - User account management
+  - OCPI-compliant contract management
+  - Multi-modal authentication tokens (RFID, App, Vehicle)
+  - Family plan support
+  - Complete CRUD operations with filtering and pagination
+
+---
+
 ## Base URL
 All endpoints are served on the configured HTTP port (default: varies by deployment)
+
+## API Versioning
+The OCPP Server uses a clean, versioned API structure:
+
+- **V1 API**: `/api/v1/*` - Production API with clean architecture and separation of concerns
+
+## Architecture Overview
+The API is organized into clean layers:
+- **Handlers**: HTTP request/response handling separated by domain
+- **Services**: Business logic layer with proper encapsulation
+- **Models**: Clean API request/response models
+- **Routing**: Organized route definitions with clear structure
 
 ## Health and System Information
 
@@ -38,7 +100,7 @@ Retrieves all currently connected OCPP clients.
 
 ## Charge Point Information
 
-### GET /chargepoints
+### GET /api/v1/chargepoints
 Retrieves information about all charge points.
 
 **Response (200 OK):**
@@ -59,7 +121,7 @@ Retrieves information about all charge points.
 }
 ```
 
-### GET /chargepoints/{clientID}
+### GET /api/v1/chargepoints/{clientID}
 Retrieves information about a specific charge point.
 
 **Parameters:**
@@ -87,7 +149,7 @@ Retrieves information about a specific charge point.
 }
 ```
 
-### GET /chargepoints/{clientID}/connectors
+### GET /api/v1/chargepoints/{clientID}/connectors
 Retrieves all connectors for a specific charge point.
 
 **Parameters:**
@@ -111,7 +173,7 @@ Retrieves all connectors for a specific charge point.
 }
 ```
 
-### GET /chargepoints/{clientID}/connectors/{connectorID}
+### GET /api/v1/chargepoints/{clientID}/connectors/{connectorID}
 Retrieves information about a specific connector.
 
 **Parameters:**
@@ -159,7 +221,7 @@ Retrieves the online status of a specific charge point.
 
 ## Transaction Information
 
-### GET /transactions
+### GET /api/v1/transactions
 Retrieves active transactions, optionally filtered by charge point.
 
 **Query Parameters:**
@@ -187,7 +249,7 @@ Retrieves active transactions, optionally filtered by charge point.
 }
 ```
 
-### GET /transactions/{transactionID}
+### GET /api/v1/transactions/{transactionID}
 Retrieves information about a specific transaction.
 
 **Parameters:**
@@ -226,10 +288,13 @@ Retrieves information about a specific transaction.
 }
 ```
 
-## Remote Transaction Control
+## Remote Transaction Control ⭐
+
+*These are the most frequently used endpoints for testing transaction operations.*
 
 ### POST /api/v1/transactions/remote-start
-Initiates a remote start transaction on a charge point (new API).
+**🚀 START A CHARGING SESSION**
+Initiates a remote start transaction on a charge point.
 
 **Request Body:**
 ```json
@@ -289,7 +354,8 @@ Initiates a remote start transaction on a charge point (new API).
 ```
 
 ### POST /api/v1/transactions/remote-stop
-Stops a remote transaction on a charge point (new API).
+**🛑 STOP A CHARGING SESSION**
+Stops a remote transaction on a charge point.
 
 **Request Body:**
 ```json
@@ -334,69 +400,6 @@ Stops a remote transaction on a charge point (new API).
 }
 ```
 
-### POST /clients/{clientID}/remote-start
-Legacy remote start transaction endpoint.
-
-**Parameters:**
-- `clientID` (path): Target charge point identifier
-
-**Request Body:**
-```json
-{
-  "idTag": "USER123",
-  "connectorId": 1
-}
-```
-
-**Request Body Parameters:**
-- `idTag` (required): RFID tag or user identifier
-- `connectorId` (optional): Connector identifier (defaults to 1)
-
-**Response (200 OK):**
-```json
-{
-  "success": true,
-  "message": "Remote start transaction successful",
-  "data": {
-    "requestId": "1697360400123456789",
-    "clientId": "CP001",
-    "connectorId": 1,
-    "status": "accepted",
-    "message": "RemoteStartTransaction accepted by charge point"
-  }
-}
-```
-
-### POST /clients/{clientID}/remote-stop
-Legacy remote stop transaction endpoint.
-
-**Parameters:**
-- `clientID` (path): Target charge point identifier
-
-**Request Body:**
-```json
-{
-  "transactionId": 123
-}
-```
-
-**Request Body Parameters:**
-- `transactionId` (required): Transaction identifier (minimum 1)
-
-**Response (200 OK):**
-```json
-{
-  "success": true,
-  "message": "Remote stop transaction successful",
-  "data": {
-    "requestId": "1697360400123456789",
-    "clientId": "CP001",
-    "connectorId": 0,
-    "status": "accepted",
-    "message": "RemoteStopTransaction accepted by charge point"
-  }
-}
-```
 
 ## Configuration Management
 
@@ -571,7 +574,9 @@ Changes live configuration directly on the charge point.
 }
 ```
 
-## Error Handling
+## API Reference Information
+
+### Error Handling
 
 All endpoints use standard HTTP status codes:
 
@@ -594,15 +599,57 @@ Error responses follow the APIResponse format:
 }
 ```
 
-## Authentication
+### Authentication
 
 Currently, this API does not implement authentication. All endpoints are publicly accessible.
 
-## Rate Limiting
+### Rate Limiting
 
 No rate limiting is currently implemented.
 
-## Content Type
+### Content Type
 
 All endpoints that accept request bodies expect `application/json` content type.
 All endpoints return `application/json` responses using the standard APIResponse format.
+
+### API Architecture
+
+The OCPP Server API is built with a clean, layered architecture for maintainability and separation of concerns:
+
+### Directory Structure
+```
+internal/
+├── api/
+│   └── v1/
+│       ├── handlers/      # Domain-specific API handlers
+│       │   ├── chargepoints.go
+│       │   ├── transactions.go
+│       │   ├── configuration.go
+│       │   └── health.go
+│       ├── models/        # Clean API request/response models
+│       │   ├── requests.go
+│       │   ├── responses.go
+│       │   └── common.go
+│       └── routes.go      # Route definitions
+├── services/              # Business logic layer
+│   ├── chargepoint.go     # Charge point operations
+│   ├── transaction.go     # Transaction operations
+│   └── configuration.go   # Configuration operations
+└── ocpp/                  # OCPP protocol message handlers
+```
+
+### Key Architecture Benefits
+
+1. **Separation of Concerns**: API handlers, business logic, and data access are clearly separated
+2. **Service Layer**: Business logic is encapsulated in dedicated services
+3. **Clean Models**: API models are distinct from internal business models
+4. **Domain Organization**: Handlers are organized by business domain
+5. **Maintainability**: Modular structure enables easier testing and development
+6. **Scalability**: Architecture supports future feature additions
+
+### Development Patterns
+
+- **Handlers**: Focus purely on HTTP request/response handling
+- **Services**: Contain all business logic and validation
+- **Models**: Define clean contracts for API communication
+- **Routes**: Centralized route definitions with clear organization

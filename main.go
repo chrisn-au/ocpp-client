@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -17,6 +18,8 @@ import (
 const (
 	defaultRedisAddr = "localhost:6379"
 	defaultHTTPPort  = "8081"
+	defaultMQTTHost  = "localhost"
+	defaultMQTTPort  = 1883
 )
 
 func main() {
@@ -24,6 +27,26 @@ func main() {
 	redisAddr := getEnvOrDefault("REDIS_ADDR", defaultRedisAddr)
 	redisPassword := os.Getenv("REDIS_PASSWORD")
 	httpPort := getEnvOrDefault("HTTP_PORT", defaultHTTPPort)
+
+	// Parse MQTT configuration
+	mqttEnabled := getEnvOrDefault("MQTT_ENABLED", "false") == "true"
+	mqttHost := getEnvOrDefault("MQTT_HOST", defaultMQTTHost)
+	mqttPortStr := getEnvOrDefault("MQTT_PORT", strconv.Itoa(defaultMQTTPort))
+	mqttPort, err := strconv.Atoi(mqttPortStr)
+	if err != nil {
+		log.Fatalf("Invalid MQTT_PORT: %v", err)
+	}
+	mqttUsername := os.Getenv("MQTT_USERNAME")
+	mqttPassword := os.Getenv("MQTT_PASSWORD")
+	mqttClientID := getEnvOrDefault("MQTT_CLIENT_ID", "ocpp-server")
+	mqttBusinessEventsEnabled := getEnvOrDefault("MQTT_BUSINESS_EVENTS_ENABLED", "true") == "true"
+
+	// Parse Redis state TTL
+	stateTTLStr := getEnvOrDefault("REDIS_STATE_TTL", "10m")
+	stateTTL, err := time.ParseDuration(stateTTLStr)
+	if err != nil {
+		log.Fatalf("Invalid REDIS_STATE_TTL: %v", err)
+	}
 
 	// Create Redis transport configuration
 	config := &transport.RedisConfig{
@@ -33,7 +56,7 @@ func main() {
 		ChannelPrefix:       "ocpp",
 		UseDistributedState: true,
 		StateKeyPrefix:      "ocpp",
-		StateTTL:            30 * time.Second,
+		StateTTL:            stateTTL,
 	}
 
 	// Create factory and components
@@ -57,9 +80,16 @@ func main() {
 	// Create server
 	srv, err := server.NewServer(
 		server.Config{
-			RedisAddr:     redisAddr,
-			RedisPassword: redisPassword,
-			HTTPPort:      httpPort,
+			RedisAddr:                 redisAddr,
+			RedisPassword:             redisPassword,
+			HTTPPort:                  httpPort,
+			MQTTEnabled:               mqttEnabled,
+			MQTTHost:                  mqttHost,
+			MQTTPort:                  mqttPort,
+			MQTTUsername:              mqttUsername,
+			MQTTPassword:              mqttPassword,
+			MQTTClientID:              mqttClientID,
+			MQTTBusinessEventsEnabled: mqttBusinessEventsEnabled,
 		},
 		redisTransport,
 		businessState,

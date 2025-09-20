@@ -6,19 +6,29 @@ import (
 	"net/http"
 
 	"github.com/lorenzodonini/ocpp-go/ocpp1.6/core"
+	"github.com/lorenzodonini/ocpp-go/ocpp1.6/remotetrigger"
 	"github.com/lorenzodonini/ocpp-go/ocppj"
 	"github.com/lorenzodonini/ocpp-go/transport"
 
 	cfgmgr "ocpp-server/config"
-	"ocpp-server/handlers"
+	"ocpp-server/internal/handlers"
 	"ocpp-server/internal/correlation"
+	"ocpp-server/internal/mqtt"
+	"ocpp-server/internal/types"
 )
 
 // Config holds the server configuration
 type Config struct {
-	RedisAddr     string
-	RedisPassword string
-	HTTPPort      string
+	RedisAddr                 string
+	RedisPassword             string
+	HTTPPort                  string
+	MQTTEnabled               bool
+	MQTTHost                  string
+	MQTTPort                  int
+	MQTTUsername              string
+	MQTTPassword              string
+	MQTTClientID              string
+	MQTTBusinessEventsEnabled bool // Enable business-level MQTT events
 }
 
 // Server represents the OCPP server with all its components
@@ -29,10 +39,10 @@ type Server struct {
 	httpServer               *http.Server
 	transactionCounter       int
 	configManager            *cfgmgr.ConfigurationManager
-	meterValueProcessor      *handlers.MeterValueProcessor
-	remoteTransactionHandler *handlers.RemoteTransactionHandler
-	transactionHandler       *handlers.TransactionHandler
+	meterValueProcessor *handlers.MeterValueProcessor
+	transactionHandler  *handlers.TransactionHandler
 	correlationManager       *correlation.Manager
+	mqttPublisher            *mqtt.Publisher
 }
 
 // NewServer creates a new server instance
@@ -51,18 +61,36 @@ func NewServer(config Config, redisTransport transport.Transport, businessState 
 	server.meterValueProcessor = handlers.NewMeterValueProcessor(businessState, server.configManager)
 
 	// Create OCPP server with distributed state
-	server.ocppServer = ocppj.NewServerWithTransport(redisTransport, nil, serverState, core.Profile)
+	server.ocppServer = ocppj.NewServerWithTransport(redisTransport, nil, serverState, core.Profile, remotetrigger.Profile)
 
-	// Create remote transaction handler
-	server.remoteTransactionHandler = handlers.NewRemoteTransactionHandler(
-		server.ocppServer,
-		server.redisTransport,
-		server.businessState,
-		server, // Pass server as PendingRequestManager
-	)
 
-	// Create transaction handler
-	server.transactionHandler = handlers.NewTransactionHandler(businessState, server.meterValueProcessor)
+	// Create MQTT publisher if enabled
+	if config.MQTTEnabled {
+		mqttConfig := mqtt.PublisherConfig{
+			BrokerHost:            config.MQTTHost,
+			BrokerPort:            config.MQTTPort,
+			Username:              config.MQTTUsername,
+			Password:              config.MQTTPassword,
+			ClientID:              config.MQTTClientID,
+			QoS:                   0, // At most once delivery
+			Retained:              false,
+			BusinessEventsEnabled: config.MQTTBusinessEventsEnabled,
+		}
+
+		var err error
+		server.mqttPublisher, err = mqtt.NewPublisher(mqttConfig)
+		if err != nil {
+			log.Printf("Failed to create MQTT publisher: %v", err)
+			return nil, err
+		}
+	}
+
+	// Create transaction handler with MQTT publisher if available
+	if server.mqttPublisher != nil {
+		server.transactionHandler = handlers.NewTransactionHandlerWithMQTT(businessState, server.meterValueProcessor, server.mqttPublisher)
+	} else {
+		server.transactionHandler = handlers.NewTransactionHandler(businessState, server.meterValueProcessor)
+	}
 
 	return server, nil
 }
@@ -72,6 +100,16 @@ func (s *Server) Start(ctx context.Context, redisConfig *transport.RedisConfig, 
 	// Setup handlers
 	s.setupOCPPHandlers()
 	s.setupHTTPAPI(httpPort)
+
+	// Connect to MQTT broker if enabled
+	if s.mqttPublisher != nil {
+		if err := s.mqttPublisher.Connect(); err != nil {
+			log.Printf("Failed to connect to MQTT broker: %v", err)
+			// Don't fail the entire server startup if MQTT connection fails
+		} else {
+			log.Println("MQTT publisher connected successfully")
+		}
+	}
 
 	// Start OCPP server
 	go func() {
@@ -100,6 +138,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 	if err := s.ocppServer.StopWithTransport(ctx); err != nil {
 		log.Printf("Error stopping OCPP server: %v", err)
+	}
+
+	// Disconnect MQTT publisher
+	if s.mqttPublisher != nil {
+		s.mqttPublisher.Disconnect()
 	}
 
 	return nil
@@ -147,18 +190,19 @@ func (s *Server) GetTransactionHandler() *handlers.TransactionHandler {
 	return s.transactionHandler
 }
 
-// GetRemoteTransactionHandler returns the remote transaction handler
-func (s *Server) GetRemoteTransactionHandler() *handlers.RemoteTransactionHandler {
-	return s.remoteTransactionHandler
-}
 
 // GetCorrelationManager returns the correlation manager
 func (s *Server) GetCorrelationManager() *correlation.Manager {
 	return s.correlationManager
 }
 
+// GetMQTTPublisher returns the MQTT publisher
+func (s *Server) GetMQTTPublisher() *mqtt.Publisher {
+	return s.mqttPublisher
+}
+
 // PendingRequestManager interface implementation for handlers package
-func (s *Server) AddPendingRequest(requestID, clientID, requestType string) chan handlers.LiveConfigResponse {
+func (s *Server) AddPendingRequest(requestID, clientID, requestType string) chan types.LiveConfigResponse {
 	return s.correlationManager.AddPendingRequestForHandlers(requestID, clientID, requestType)
 }
 
@@ -166,6 +210,6 @@ func (s *Server) CleanupPendingRequest(requestID string) {
 	s.correlationManager.CleanupPendingRequest(requestID)
 }
 
-func (s *Server) SendPendingResponse(clientID, requestType string, response handlers.LiveConfigResponse) {
+func (s *Server) SendPendingResponse(clientID, requestType string, response types.LiveConfigResponse) {
 	s.correlationManager.SendPendingResponseFromHandlers(clientID, requestType, response)
 }

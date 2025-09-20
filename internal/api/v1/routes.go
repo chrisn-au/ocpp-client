@@ -14,6 +14,7 @@ func RegisterRoutes(
 	transactionService *services.TransactionService,
 	configService *services.ConfigurationService,
 	remoteTransactionService *services.RemoteTransactionService,
+	triggerMessageService *services.TriggerMessageService,
 ) {
 	// Create handlers
 	healthHandler := handlers.NewHealthHandler()
@@ -57,4 +58,7 @@ func RegisterRoutes(
 	// Live configuration management
 	v1Router.HandleFunc("/chargepoints/{clientID}/configuration/live", configurationHandler.GetLiveConfiguration).Methods("GET")
 	v1Router.HandleFunc("/chargepoints/{clientID}/configuration/live", configurationHandler.ChangeLiveConfiguration).Methods("PUT")
+
+	// Trigger message management
+	v1Router.HandleFunc("/chargepoints/{clientID}/trigger", handlers.TriggerMessageHandler(triggerMessageService)).Methods("POST")
 }

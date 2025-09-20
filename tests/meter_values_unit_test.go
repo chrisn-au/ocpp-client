@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
-	"ocpp-server/handlers"
+	"ocpp-server/internal/handlers"
 	"ocpp-server/models"
 )
 

@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"ocpp-server/handlers"
 	"ocpp-server/internal/types"
 )
 
@@ -149,14 +148,14 @@ func (m *Manager) SendPendingResponse(clientID, requestType string, response typ
 }
 
 // AddPendingRequestForHandlers adds a pending request and returns a channel compatible with handlers package
-func (m *Manager) AddPendingRequestForHandlers(requestID, clientID, requestType string) chan handlers.LiveConfigResponse {
+func (m *Manager) AddPendingRequestForHandlers(requestID, clientID, requestType string) chan types.LiveConfigResponse {
 	// Convert internal type to handlers type
 	internalChan := m.AddPendingRequest(requestID, clientID, requestType)
-	handlersChan := make(chan handlers.LiveConfigResponse, 1)
+	handlersChan := make(chan types.LiveConfigResponse, 1)
 
 	go func() {
 		resp := <-internalChan
-		handlersChan <- handlers.LiveConfigResponse{
+		handlersChan <- types.LiveConfigResponse{
 			Success: resp.Success,
 			Data:    resp.Data,
 			Error:   resp.Error,
@@ -168,7 +167,7 @@ func (m *Manager) AddPendingRequestForHandlers(requestID, clientID, requestType 
 }
 
 // SendPendingResponseFromHandlers sends a response from handlers package format
-func (m *Manager) SendPendingResponseFromHandlers(clientID, requestType string, response handlers.LiveConfigResponse) {
+func (m *Manager) SendPendingResponseFromHandlers(clientID, requestType string, response types.LiveConfigResponse) {
 	m.SendPendingResponse(clientID, requestType, types.LiveConfigResponse{
 		Success: response.Success,
 		Data:    response.Data,
